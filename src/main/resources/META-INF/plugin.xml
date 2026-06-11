@@ -1,0 +1,39 @@
+<idea-plugin>
+    <id>dev.flaticols.deliverypipeline</id>
+    <name>Delivery Pipeline</name>
+    <vendor email="services@flaticols.dev" url="https://flaticols.dev">Denis Panfilov</vendor>
+    <description><![CDATA[
+        Google Cloud Deploy delivery pipelines as a service type in the
+        Services tool window. Watch pipelines from any GCP project and region,
+        and check every target's latest rollout state at a glance.
+        <ul>
+            <li>Add via the Services view's + popup: <b>GCP Delivery Pipelines…</b></li>
+            <li>Pipeline nodes expand into targets with per-target release and
+                rollout status (succeeded / in progress / pending approval / failed).</li>
+            <li>Double-click opens the pipeline in the Cloud Console;
+                Delete unwatches it; the list persists per project.</li>
+            <li>Auth comes from the local <code>gcloud</code> CLI (one
+                <code>print-access-token</code> call per ~50 min); data is
+                fetched directly from the Cloud Deploy REST API.</li>
+        </ul>
+        Requires the gcloud CLI, authenticated (<code>gcloud auth login</code>).
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <serviceViewContributor implementation="dev.flaticols.deliverypipeline.services.PipelinesServiceContributor"/>
+        <notificationGroup id="Delivery Pipeline" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <action id="DeliveryPipeline.Add"
+                class="dev.flaticols.deliverypipeline.actions.AddPipelineAction"
+                text="GCP Delivery Pipelines…"
+                description="Watch Google Cloud Deploy delivery pipelines in the Services tool window"
+                icon="AllIcons.Nodes.Deploy">
+            <add-to-group group-id="ServiceView.AddService" anchor="last"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
