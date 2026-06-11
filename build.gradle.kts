@@ -27,7 +27,7 @@ dependencies {
         if (localIde != null) {
             local(localIde)
         } else {
-            intellijIdeaCommunity("2026.1.1")
+            intellijIdea("2026.1.1")
         }
         pluginVerifier()
     }
