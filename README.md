@@ -49,3 +49,21 @@ runs in any IntelliJ-based IDE 2026.1+.
 
 Settings → Plugins → ⚙ → Install Plugin from Disk… → pick the zip from
 `build/distributions/`.
+
+## Beta channel
+
+This plugin is currently published to the **beta** release channel on JetBrains
+Marketplace (the version carries a `-beta` suffix). To receive beta builds, add
+the beta repository in **Settings → Plugins → ⚙ → Manage Plugin Repositories…**:
+
+```
+https://plugins.jetbrains.com/plugins/beta/list
+```
+
+then install **Delivery Pipeline** as usual. The channel is derived from the
+version suffix (trailing build number stripped) — `0.5.2-beta1` goes to `beta`,
+an unsuffixed `0.5.2` would go to the stable channel.
+
+## License
+
+[MIT](LICENSE) © Denis Panfilov

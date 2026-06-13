@@ -32,10 +32,20 @@ jobs:
       - name: Build plugin
         run: ./gradlew buildPlugin
 
+      - name: Publish to JetBrains Marketplace
+        env:
+          PUBLISH_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+        run: ./gradlew publishPlugin
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Tags with a pre-release suffix (e.g. v0.5.1-beta) are flagged as pre-releases.
+          prerelease=""
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease="--prerelease" ;;
+          esac
           gh release create "$GITHUB_REF_NAME" build/distributions/*.zip \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes
+            --generate-notes $prerelease

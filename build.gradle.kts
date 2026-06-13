@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "dev.flaticols.deliverypipeline"
-version = "0.5.1"
+version = "0.5.2-beta1"
 
 repositories {
     mavenCentral()
@@ -38,6 +38,17 @@ intellijPlatform {
         ideaVersion {
             sinceBuild = "261"
         }
+    }
+
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
+        // Channel is derived from the version suffix, with any trailing build
+        // number stripped:
+        //   0.5.2        -> "default" (Stable)
+        //   0.5.2-beta1  -> "beta"    (users subscribe via the beta repository URL)
+        channels = listOf(
+            version.toString().substringAfter('-', "").trimEnd { it.isDigit() }.ifEmpty { "default" }
+        )
     }
 }
 
