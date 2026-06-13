@@ -29,9 +29,6 @@ import javax.swing.table.DefaultTableModel
  * the panels — these are read-only summaries.
  */
 object DetailPanels {
-
-    // ---- pipeline -----------------------------------------------------------
-
     fun pipelinePanel(project: Project, ref: PipelineRef): JComponent =
         when (val snapshot = PipelinesModel.getInstance(project).snapshot(ref)) {
             is Snapshot.Loading -> message("Loading ${ref.pipeline}…")
@@ -86,8 +83,6 @@ object DetailPanels {
         return panel
     }
 
-    // ---- target -------------------------------------------------------------
-
     fun targetPanel(project: Project, ref: PipelineRef, target: TargetState): JComponent {
         val latest = target.latest
         val current = target.current
@@ -138,8 +133,6 @@ object DetailPanels {
         }
     }
 
-    // ---- rollout ------------------------------------------------------------
-
     fun rolloutPanel(ref: PipelineRef, rollout: RolloutInfo): JComponent {
         val form = form(
             "Version:" to bold(rollout.release),
@@ -152,8 +145,6 @@ object DetailPanels {
         )
         return page(header(rollout.icon, rollout.rolloutId, "${ref.pipeline} · ${ref.gcpProject}/${ref.region}"), form)
     }
-
-    // ---- building blocks ----------------------------------------------------
 
     private fun page(header: JComponent, form: JComponent): JComponent {
         val top = JPanel(BorderLayout())

@@ -122,8 +122,6 @@ object CloudDeployApi {
                 )
             }
 
-    // ---- plumbing -----------------------------------------------------------
-
     private val http: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
         .build()
