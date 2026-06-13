@@ -1,5 +1,7 @@
 # Delivery Pipeline — IntelliJ plugin
 
+[![JetBrains Marketplace](https://img.shields.io/jetbrains/plugin/v/32269.svg?label=marketplace)](https://plugins.jetbrains.com/plugin/32269-delivery-pipeline)
+
 Google Cloud Deploy delivery pipelines as a **service type** in the IDE's
 Services tool window (the same `+` popup as Docker and Kubernetes →
 **GCP Delivery Pipelines…**).
@@ -52,8 +54,10 @@ Settings → Plugins → ⚙ → Install Plugin from Disk… → pick the zip fr
 
 ## Beta channel
 
-This plugin is currently published to the **beta** release channel on JetBrains
-Marketplace (the version carries a `-beta` suffix). To receive beta builds, add
+This plugin is published on
+[JetBrains Marketplace](https://plugins.jetbrains.com/plugin/32269-delivery-pipeline),
+currently on the **beta** release channel (the version carries a `-beta`
+suffix). To receive beta builds, add
 the beta repository in **Settings → Plugins → ⚙ → Manage Plugin Repositories…**:
 
 ```
