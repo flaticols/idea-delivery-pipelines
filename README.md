@@ -60,9 +60,9 @@ the beta repository in **Settings → Plugins → ⚙ → Manage Plugin Reposito
 https://plugins.jetbrains.com/plugins/beta/list
 ```
 
-then install **Delivery Pipeline** as usual. Releases are derived from the
-version suffix — `0.5.1-beta` goes to `beta`, an unsuffixed `0.5.1` would go to
-the stable channel.
+then install **Delivery Pipeline** as usual. The channel is derived from the
+version suffix (trailing build number stripped) — `0.5.2-beta1` goes to `beta`,
+an unsuffixed `0.5.2` would go to the stable channel.
 
 ## License
 
