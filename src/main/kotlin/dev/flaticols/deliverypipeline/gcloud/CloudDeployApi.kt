@@ -4,6 +4,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.flaticols.deliverypipeline.model.PipelineRef
+import dev.flaticols.deliverypipeline.model.ReleaseInfo
 import dev.flaticols.deliverypipeline.model.RolloutInfo
 import java.net.URI
 import java.net.URLEncoder
@@ -63,9 +64,17 @@ object CloudDeployApi {
     fun recentRollouts(ref: PipelineRef, targets: Set<String>): List<RolloutInfo> =
         try {
             aggregatedRollouts(ref, targets)
-        } catch (e: CloudDeployException) {
+        } catch (_: CloudDeployException) {
             rolloutsPerRelease(ref)
         }
+
+    /**
+     * Every existing rollout of one [release] across its targets — the
+     * authoritative list (not the bounded per-target snapshot), so callers can
+     * allocate a non-colliding next rolloutId even for an old release.
+     */
+    fun releaseRollouts(ref: PipelineRef, release: String): List<RolloutInfo> =
+        parseRollouts(getJson("$BASE/${ref.resourcePath}/releases/$release/rollouts?pageSize=$PAGE_SIZE"))
 
     /**
      * Promotes [release] to [targetId] by creating a rollout — the REST
@@ -75,6 +84,34 @@ object CloudDeployApi {
     fun promote(ref: PipelineRef, release: String, targetId: String, rolloutId: String) {
         val body = JsonObject().apply { addProperty("targetId", targetId) }
         postJson("$BASE/${ref.resourcePath}/releases/$release/rollouts?rolloutId=${enc(rolloutId)}", body)
+    }
+
+    /**
+     * Approves ([approved] = true) or rejects (false) a rollout awaiting
+     * approval — the REST equivalent of the Cloud Console Approve/Reject
+     * buttons. [rolloutName] is the rollout's full resource name (…/rollouts/{ro}).
+     * The API returns an empty body; a rollout that is no longer awaiting
+     * approval yields FAILED_PRECONDITION, surfaced as a [CloudDeployException].
+     */
+    fun approveRollout(rolloutName: String, approved: Boolean) {
+        val body = JsonObject().apply { addProperty("approved", approved) }
+        postJson("$BASE/$rolloutName:approve", body)
+    }
+
+    /**
+     * Whether the current credentials may approve/reject rollouts in [ref] — a
+     * `testIamPermissions` probe for [APPROVE_PERMISSION] on the pipeline
+     * resource (rollouts have no own IAM policy; they inherit the pipeline's, so
+     * this is exact). Approve and reject share the one permission. Callers wrap
+     * this in runCatching and treat any failure as "unknown" (don't block).
+     */
+    fun canApproveRollouts(ref: PipelineRef): Boolean {
+        val body = JsonObject().apply {
+            add("permissions", JsonArray().apply { add(APPROVE_PERMISSION) })
+        }
+        return postJson("$BASE/${ref.resourcePath}:testIamPermissions", body)
+            .arr("permissions")
+            .any { it.isJsonPrimitive && it.asString == APPROVE_PERMISSION }
     }
 
     private fun aggregatedRollouts(ref: PipelineRef, targets: Set<String>): List<RolloutInfo> {
@@ -95,15 +132,28 @@ object CloudDeployApi {
     }
 
     private fun rolloutsPerRelease(ref: PipelineRef): List<RolloutInfo> =
-        recentReleases(ref).flatMap { release ->
-            parseRollouts(getJson("$BASE/${ref.resourcePath}/releases/$release/rollouts?pageSize=$PAGE_SIZE"))
+        recentReleases(ref, RELEASE_DEPTH).flatMap { release ->
+            parseRollouts(getJson("$BASE/${ref.resourcePath}/releases/${release.release}/rollouts?pageSize=$PAGE_SIZE"))
         }
 
-    /** Newest-first by API default; no orderBy — the API rejects it. */
-    private fun recentReleases(ref: PipelineRef): List<String> =
-        getJson("$BASE/${ref.resourcePath}/releases?pageSize=$RELEASE_DEPTH")
+    /**
+     * Recent releases, newest-first (API default; no orderBy — it's rejected).
+     * [limit] caps the page size. Used both by the Releases tree node and, with
+     * a smaller cap, by the per-release rollout fallback.
+     */
+    fun recentReleases(ref: PipelineRef, limit: Int = RELEASES_DEPTH): List<ReleaseInfo> =
+        getJson("$BASE/${ref.resourcePath}/releases?pageSize=$limit")
             .arr("releases")
-            .mapNotNull { (it as? JsonObject)?.str("name")?.substringAfterLast('/') }
+            .mapNotNull { row ->
+                val obj = row as? JsonObject ?: return@mapNotNull null
+                val name = obj.str("name") ?: return@mapNotNull null
+                ReleaseInfo(
+                    name = name,
+                    createTime = obj.str("createTime") ?: "",
+                    abandoned = obj.bool("abandoned"),
+                    renderState = obj.str("renderState") ?: "",
+                )
+            }
 
     private fun parseRollouts(response: JsonObject): List<RolloutInfo> =
         response.arr("rollouts")
@@ -180,7 +230,12 @@ object CloudDeployApi {
         this?.get(key)?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
 
     private const val BASE = "https://clouddeploy.googleapis.com/v1"
+    /** IAM permission gating both approve and reject of a rollout. */
+    private const val APPROVE_PERMISSION = "clouddeploy.rollouts.approve"
+    /** Releases listed per-release-rollout fallback (kept small to bound rollout fetches). */
     private const val RELEASE_DEPTH = 5
+    /** Releases shown in the Releases tree node. */
+    private const val RELEASES_DEPTH = 20
     private const val PAGE_SIZE = 200
     private const val MAX_PAGES = 5
 }

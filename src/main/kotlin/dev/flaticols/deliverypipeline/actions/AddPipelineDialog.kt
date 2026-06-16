@@ -1,5 +1,6 @@
 package dev.flaticols.deliverypipeline.actions
 
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
@@ -10,14 +11,13 @@ import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.TextFieldWithAutoCompletion
-import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.FormBuilder
+import dev.flaticols.deliverypipeline.PipelinesModel
 import dev.flaticols.deliverypipeline.gcloud.CloudDeployApi
 import dev.flaticols.deliverypipeline.model.PipelineRef
 import java.awt.Dimension
 import javax.swing.JButton
 import javax.swing.JComponent
-import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 
 /**
@@ -83,16 +83,13 @@ class AddPipelineDialog(private val ideProject: Project) : DialogWrapper(ideProj
 
     private fun loadProjects() {
         status.text = "Loading GCP projects…"
-        AppExecutorUtil.getAppExecutorService().execute {
-            val result = runCatching { CloudDeployApi.listProjects() }
-            SwingUtilities.invokeLater {
-                if (isDisposed) return@invokeLater
-                result.onSuccess { ids ->
-                    projectsProvider.setItems(ids)
-                    status.text = "${ids.size} projects — type to autocomplete"
-                }.onFailure {
-                    status.text = "Project autocomplete unavailable (${it.message}) — type the project id"
-                }
+        PipelinesModel.getInstance(ideProject).background({ CloudDeployApi.listProjects() }, ModalityState.any()) { result ->
+            if (isDisposed) return@background
+            result.onSuccess { ids ->
+                projectsProvider.setItems(ids)
+                status.text = "${ids.size} projects — type to autocomplete"
+            }.onFailure {
+                status.text = "Project autocomplete unavailable (${it.message}) — type the project id"
             }
         }
     }
@@ -106,23 +103,20 @@ class AddPipelineDialog(private val ideProject: Project) : DialogWrapper(ideProj
         }
         button.isEnabled = false
         status.text = "Loading pipelines from $gcpProject/$region…"
-        AppExecutorUtil.getAppExecutorService().execute {
-            val result = runCatching { CloudDeployApi.listPipelines(gcpProject, region) }
-            SwingUtilities.invokeLater {
-                if (isDisposed) return@invokeLater
-                button.isEnabled = true
-                result.onSuccess { names ->
-                    allPipelines = names
-                    listedProject = gcpProject
-                    listedRegion = region
-                    checked.clear() // selections belong to the previous listing
-                    refilter()
-                    status.text =
-                        if (names.isEmpty()) "No delivery pipelines in $gcpProject/$region"
-                        else "${names.size} pipelines — tick the ones to watch"
-                }.onFailure {
-                    status.text = it.message ?: "Cloud Deploy request failed"
-                }
+        PipelinesModel.getInstance(ideProject).background({ CloudDeployApi.listPipelines(gcpProject, region) }, ModalityState.any()) { result ->
+            if (isDisposed) return@background
+            button.isEnabled = true
+            result.onSuccess { names ->
+                allPipelines = names
+                listedProject = gcpProject
+                listedRegion = region
+                checked.clear() // selections belong to the previous listing
+                refilter()
+                status.text =
+                    if (names.isEmpty()) "No delivery pipelines in $gcpProject/$region"
+                    else "${names.size} pipelines — tick the ones to watch"
+            }.onFailure {
+                status.text = it.message ?: "Cloud Deploy request failed"
             }
         }
     }
@@ -141,10 +135,8 @@ class AddPipelineDialog(private val ideProject: Project) : DialogWrapper(ideProj
     fun selectedRefs(): List<PipelineRef> =
         checked.map { PipelineRef(listedProject, listedRegion, it) }
 
-    override fun doValidate(): ValidationInfo? {
-        if (checked.isEmpty()) return ValidationInfo("Tick at least one pipeline", pipelineList)
-        return null
-    }
+    override fun doValidate(): ValidationInfo? =
+        if (checked.isEmpty()) ValidationInfo("Tick at least one pipeline", pipelineList) else null
 
     private companion object {
         val REGIONS = arrayOf(

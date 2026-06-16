@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "dev.flaticols.deliverypipeline"
-version = "0.5.2-beta1"
+version = "0.5.3"
 
 repositories {
     mavenCentral()
