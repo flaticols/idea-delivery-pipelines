@@ -9,19 +9,38 @@ Services tool window (the same `+` popup as Docker and Kubernetes →
 ```
 Services
 └─ Delivery Pipelines
-   ├─ checkout-pipeline   my-proj/us-central1 · 2/3 succeeded
-   │  ├─ dev    rel-042 · succeeded
-   │  ├─ stage  rel-042 · in progress
-   │  └─ prod   rel-041 · pending approval
-   └─ billing-pipeline    other-proj/europe-west1 · 1/1 succeeded
+   └─ checkout-pipeline   my-proj/us-central1 · 2/3 succeeded · 1 awaiting approval
+      ├─ Releases   20 recent
+      │  ├─ rel-042
+      │  └─ rel-041
+      ├─ dev     rel-042 · succeeded
+      ├─ stage   rel-042 · in progress
+      └─ prod    rel-041 → rel-042 · pending approval
 ```
 
 - Watch pipelines from **multiple GCP projects, regions, and pipelines**; the
   list persists in `.idea/deliveryPipelines.xml` (shareable via VCS).
 - Each target shows the **latest rollout** across recent releases — targets on
   different releases are shown as such.
+- **Approve or reject** a pending rollout in-IDE; **promote** any recent release
+  to any target. A per-pipeline **Releases** node lists recent releases.
 - Double-click any node → Cloud Console. Delete (⌫) unwatches a pipeline.
-  Refresh per pipeline or for everything.
+  **Refresh** per pipeline shows a progress indicator and updates only on change.
+
+## What's new in 0.5.3
+
+- **Approve / reject** a pending rollout straight from the IDE — no more bouncing
+  to the Cloud Console. The action is disabled with a reason when you lack the
+  `clouddeploy.rollouts.approve` permission.
+- **Incoming** rollup per pipeline: everything awaiting approval or rolling out,
+  with inline Approve/Reject; the pipeline node shows the awaiting-approval count.
+- A **Releases** node per pipeline plus **Promote to Target…** — send any recent
+  release to any target. Rollout ids come from the release's authoritative
+  server-side list, so re-promoting an older release no longer clashes.
+- **Manual refresh** (toolbar / right-click) with a background progress
+  indicator; the tree rebuilds only when the data actually changed.
+- Internals: async moved to the platform's coroutines; approval links open the
+  Console `…/approve` page; fixed a toolbar hover/tooltip flicker.
 
 ## Auth & data path
 
@@ -52,21 +71,20 @@ runs in any IntelliJ-based IDE 2026.1+.
 Settings → Plugins → ⚙ → Install Plugin from Disk… → pick the zip from
 `build/distributions/`.
 
-## Beta channel
+## Release channels
 
-This plugin is published on
-[JetBrains Marketplace](https://plugins.jetbrains.com/plugin/32269-delivery-pipeline),
-currently on the **beta** release channel (the version carries a `-beta`
-suffix). To receive beta builds, add
-the beta repository in **Settings → Plugins → ⚙ → Manage Plugin Repositories…**:
+Published on
+[JetBrains Marketplace](https://plugins.jetbrains.com/plugin/32269-delivery-pipeline)
+on the **stable** channel. The channel is derived from the version suffix
+(trailing build number stripped) — an unsuffixed `0.5.3` goes to **stable**, a
+`0.5.x-beta1` build goes to **beta**. To also receive beta builds, add the beta
+repository in **Settings → Plugins → ⚙ → Manage Plugin Repositories…**:
 
 ```
 https://plugins.jetbrains.com/plugins/beta/list
 ```
 
-then install **Delivery Pipeline** as usual. The channel is derived from the
-version suffix (trailing build number stripped) — `0.5.2-beta1` goes to `beta`,
-an unsuffixed `0.5.2` would go to the stable channel.
+then install **Delivery Pipeline** as usual.
 
 ## License
 
