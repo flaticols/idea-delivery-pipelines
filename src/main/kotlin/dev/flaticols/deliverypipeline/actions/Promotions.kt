@@ -8,6 +8,7 @@ import com.intellij.openapi.ui.MessageDialogBuilder
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import dev.flaticols.deliverypipeline.PipelinesModel
 import dev.flaticols.deliverypipeline.gcloud.CloudDeployApi
+import dev.flaticols.deliverypipeline.gcloud.CloudDeployException
 import dev.flaticols.deliverypipeline.model.PipelineRef
 import dev.flaticols.deliverypipeline.model.RolloutInfo
 import dev.flaticols.deliverypipeline.model.Snapshot
@@ -29,6 +30,9 @@ object Promotions {
 
     /** Promotions currently dispatched, keyed by "<release>→<targetId>" — dedups double-submits. */
     private val inFlightPromotions = ConcurrentHashMap.newKeySet<String>()
+
+    /** Rollouts with a retry-job request in flight, keyed by rollout name — dedups double-submits. */
+    private val inFlightRetries = ConcurrentHashMap.newKeySet<String>()
 
     /**
      * The rollout that would be promoted into [targetId] — the previous serial
@@ -154,6 +158,57 @@ object Promotions {
                 notify(project, NotificationType.ERROR, "$verb failed",
                     it.message ?: "Cloud Deploy request failed.")
                 // Re-fetch the truth so the panel rebuilds with live (not stuck-disabled) buttons.
+                model.refresh(ref)
+            }
+        }
+        return true
+    }
+
+    /**
+     * Retry a failed [rollout]'s job — the Cloud Console "Retry" semantics: it
+     * resumes the SAME rollout. Confirms, then off the EDT fetches the rollout's
+     * live detail to locate the failed phase/job (state may have moved since the
+     * cached snapshot) and calls retryJob, finally refreshing. Returns true once
+     * the request is dispatched (user confirmed, no duplicate in flight) — inline
+     * buttons use this to disable only after a real submit.
+     */
+    fun retryRollout(project: Project, ref: PipelineRef, rollout: RolloutInfo): Boolean {
+        if (!rollout.failed) {
+            notify(project, NotificationType.WARNING, "Not failed",
+                "${rollout.release} for ${rollout.targetId} is ${rollout.statePretty}.")
+            return false
+        }
+        // A retry for this exact rollout is already running — ignore the duplicate.
+        if (rollout.name in inFlightRetries) return false
+
+        val confirmed = MessageDialogBuilder.yesNo(
+            "Retry Rollout",
+            "Retry the failed job in ${rollout.release} for ${rollout.targetId} in ${ref.pipeline}?",
+        ).ask(project)
+        if (!confirmed) return false
+        // Claim the in-flight slot; lose the race (another retry dispatched first) → skip.
+        if (!inFlightRetries.add(rollout.name)) return false
+
+        val model = PipelinesModel.getInstance(project)
+        model.background(
+            {
+                // The failed phase/job must come from the server, not the bounded cached
+                // snapshot, so the phaseId/jobId match the rollout's current live state.
+                val (phase, job) = CloudDeployApi.rolloutDetail(rollout.name).failedJob
+                    ?: throw CloudDeployException("no failed job to retry — refresh and check the rollout's status")
+                CloudDeployApi.retryJob(rollout.name, phase.id, job.id)
+                "${job.label} job in phase ${phase.id}"
+            },
+            onComplete = { inFlightRetries.remove(rollout.name) }, // always released, even on project-close cancel
+        ) { result ->
+            result.onSuccess { what ->
+                notify(project, NotificationType.INFORMATION, "Retry started",
+                    "Retrying $what for ${rollout.targetId}.")
+                model.refresh(ref)
+            }.onFailure {
+                notify(project, NotificationType.ERROR, "Retry failed",
+                    it.message ?: "Cloud Deploy request failed.")
+                // Re-fetch the truth so the panel rebuilds with live (not stuck) state.
                 model.refresh(ref)
             }
         }

@@ -3,9 +3,14 @@ package dev.flaticols.deliverypipeline.gcloud
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.flaticols.deliverypipeline.model.JobRunDetail
 import dev.flaticols.deliverypipeline.model.PipelineRef
 import dev.flaticols.deliverypipeline.model.ReleaseInfo
+import dev.flaticols.deliverypipeline.model.RolloutDetail
 import dev.flaticols.deliverypipeline.model.RolloutInfo
+import dev.flaticols.deliverypipeline.model.RolloutJob
+import dev.flaticols.deliverypipeline.model.RolloutPermissions
+import dev.flaticols.deliverypipeline.model.RolloutPhase
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
@@ -99,20 +104,109 @@ object CloudDeployApi {
     }
 
     /**
-     * Whether the current credentials may approve/reject rollouts in [ref] — a
-     * `testIamPermissions` probe for [APPROVE_PERMISSION] on the pipeline
-     * resource (rollouts have no own IAM policy; they inherit the pipeline's, so
-     * this is exact). Approve and reject share the one permission. Callers wrap
-     * this in runCatching and treat any failure as "unknown" (don't block).
+     * Retries the failed [jobId] in [phaseId] of the rollout [rolloutName] — the
+     * REST equivalent of the Cloud Console "Retry" button. It resumes the SAME
+     * rollout in place (no new rollout is created). The API returns an empty
+     * body; a job that is no longer retryable yields FAILED_PRECONDITION (or
+     * INVALID_ARGUMENT for a stale phase/job id), surfaced as a [CloudDeployException].
      */
-    fun canApproveRollouts(ref: PipelineRef): Boolean {
+    fun retryJob(rolloutName: String, phaseId: String, jobId: String) {
         val body = JsonObject().apply {
-            add("permissions", JsonArray().apply { add(APPROVE_PERMISSION) })
+            addProperty("phaseId", phaseId)
+            addProperty("jobId", jobId)
         }
-        return postJson("$BASE/${ref.resourcePath}:testIamPermissions", body)
-            .arr("permissions")
-            .any { it.isJsonPrimitive && it.asString == APPROVE_PERMISSION }
+        postJson("$BASE/$rolloutName:retryJob", body)
     }
+
+    /**
+     * The current credentials' rollout permissions on [ref] — one
+     * `testIamPermissions` probe for the approve and retry permissions on the
+     * pipeline resource (rollouts have no own IAM policy; they inherit the
+     * pipeline's, so this is exact). Approve and reject share one permission.
+     * Callers wrap this in runCatching and treat any failure as "unknown".
+     */
+    fun rolloutPermissions(ref: PipelineRef): RolloutPermissions {
+        val body = JsonObject().apply {
+            add("permissions", JsonArray().apply { add(APPROVE_PERMISSION); add(RETRY_PERMISSION) })
+        }
+        val granted = postJson("$BASE/${ref.resourcePath}:testIamPermissions", body)
+            .arr("permissions")
+            .mapNotNull { it.takeIf { e -> e.isJsonPrimitive }?.asString }
+            .toSet()
+        return RolloutPermissions(
+            canApprove = APPROVE_PERMISSION in granted,
+            canRetry = RETRY_PERMISSION in granted,
+        )
+    }
+
+    /**
+     * Full detail of one rollout (phases + their jobs) via a GET on the rollout
+     * resource — the source the status panel renders and from which the failed
+     * phase/job for [retryJob] is located. [rolloutName] is the full resource name.
+     */
+    fun rolloutDetail(rolloutName: String): RolloutDetail {
+        val obj = getJson("$BASE/$rolloutName")
+        return RolloutDetail(
+            name = obj.str("name") ?: rolloutName,
+            targetId = obj.str("targetId") ?: "",
+            state = obj.str("state") ?: "",
+            failureReason = obj.str("failureReason") ?: "",
+            deployFailureCause = obj.str("deployFailureCause") ?: "",
+            createTime = obj.str("createTime") ?: "",
+            deployStartTime = obj.str("deployStartTime") ?: "",
+            deployEndTime = obj.str("deployEndTime") ?: "",
+            phases = obj.arr("phases").mapNotNull { row ->
+                val p = row as? JsonObject ?: return@mapNotNull null
+                RolloutPhase(
+                    id = p.str("id") ?: "",
+                    state = p.str("state") ?: "",
+                    jobs = parsePhaseJobs(p),
+                )
+            },
+        )
+    }
+
+    /**
+     * The run of one job, by its JobRun resource name — the failure message and
+     * the Cloud Build that ran it (for a logs link). [jobRunName] is `Job.jobRun`.
+     */
+    fun jobRunDetail(jobRunName: String): JobRunDetail {
+        val obj = getJson("$BASE/$jobRunName")
+        // Exactly one of the *JobRun oneof branches is set; the failure fields live there.
+        val run = JOB_RUN_BRANCHES.firstNotNullOfOrNull { obj.obj(it) }
+        return JobRunDetail(
+            name = obj.str("name") ?: jobRunName,
+            state = obj.str("state") ?: "",
+            failureMessage = run.str("failureMessage") ?: "",
+            build = run.str("build") ?: "",
+        )
+    }
+
+    /**
+     * The jobs of a phase, in execution order. A normal phase carries a single
+     * job per stage under `deploymentJobs`; a canary/multi-target phase carries
+     * arrays of child-rollout jobs under `childRolloutJobs`.
+     */
+    private fun parsePhaseJobs(phase: JsonObject): List<RolloutJob> {
+        phase.obj("deploymentJobs")?.let { jobs ->
+            return DEPLOYMENT_JOB_FIELDS.mapNotNull { (field, kind) ->
+                jobs.obj(field)?.let { parseJob(it, kind) }
+            }
+        }
+        phase.obj("childRolloutJobs")?.let { jobs ->
+            return (jobs.arr("createRolloutJobs").map { it to "create child rollout" } +
+                jobs.arr("advanceRolloutJobs").map { it to "advance child rollout" })
+                .mapNotNull { (row, kind) -> (row as? JsonObject)?.let { parseJob(it, kind) } }
+        }
+        return emptyList()
+    }
+
+    private fun parseJob(job: JsonObject, kind: String): RolloutJob = RolloutJob(
+        id = job.str("id") ?: "",
+        state = job.str("state") ?: "",
+        kind = kind,
+        jobRun = job.str("jobRun") ?: "",
+    )
 
     private fun aggregatedRollouts(ref: PipelineRef, targets: Set<String>): List<RolloutInfo> {
         val collected = mutableListOf<RolloutInfo>()
@@ -232,6 +326,18 @@ object CloudDeployApi {
     private const val BASE = "https://clouddeploy.googleapis.com/v1"
     /** IAM permission gating both approve and reject of a rollout. */
     private const val APPROVE_PERMISSION = "clouddeploy.rollouts.approve"
+    /** IAM permission gating retry of a rollout's failed job. */
+    private const val RETRY_PERMISSION = "clouddeploy.rollouts.retryJob"
+    /** `deploymentJobs` stage fields, in execution order, mapped to readable kinds. */
+    private val DEPLOYMENT_JOB_FIELDS = listOf(
+        "predeployJob" to "predeploy",
+        "deployJob" to "deploy",
+        "verifyJob" to "verify",
+        "analysisJob" to "analysis",
+        "postdeployJob" to "postdeploy",
+    )
+    /** JobRun oneof branches that carry `failureMessage`/`build` (Cloud Build jobs). */
+    private val JOB_RUN_BRANCHES = listOf("deployJobRun", "verifyJobRun", "predeployJobRun", "postdeployJobRun")
     /** Releases listed per-release-rollout fallback (kept small to bound rollout fetches). */
     private const val RELEASE_DEPTH = 5
     /** Releases shown in the Releases tree node. */

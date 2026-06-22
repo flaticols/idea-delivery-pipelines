@@ -121,8 +121,8 @@ class PipelinesModel(private val project: Project, private val cs: CoroutineScop
     private fun fetch(ref: PipelineRef): Snapshot.Data {
         val stages = CloudDeployApi.pipelineStages(ref)
         val approvals = CloudDeployApi.targetApprovals(ref.gcpProject, ref.region)
-        // Best-effort IAM probe — a failure must not sink the whole snapshot.
-        val canApprove = runCatching { CloudDeployApi.canApproveRollouts(ref) }.getOrNull()
+        // Best-effort IAM probe (approve + retry in one call) — a failure must not sink the snapshot.
+        val perms = runCatching { CloudDeployApi.rolloutPermissions(ref) }.getOrNull()
         // Recent releases for the Releases node — also best-effort.
         val releases = runCatching { CloudDeployApi.recentReleases(ref) }.getOrDefault(emptyList())
         // Newest rollout per target wins — targets may run different releases.
@@ -141,7 +141,8 @@ class PipelinesModel(private val project: Project, private val cs: CoroutineScop
                     history = history.take(HISTORY_DEPTH),
                 )
             },
-            canApprove = canApprove,
+            canApprove = perms?.canApprove,
+            canRetry = perms?.canRetry,
             releases = releases,
         )
     }

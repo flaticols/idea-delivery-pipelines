@@ -2,6 +2,7 @@ package dev.flaticols.deliverypipeline.services
 
 import com.intellij.execution.services.ServiceViewContributor
 import com.intellij.execution.services.ServiceViewDescriptor
+import com.intellij.execution.services.ServiceViewManager
 import com.intellij.execution.services.ServiceViewProvidingContributor
 import com.intellij.execution.services.SimpleServiceViewDescriptor
 import com.intellij.icons.AllIcons
@@ -181,6 +182,10 @@ private fun gateAction(
 private fun approvalAllowed(project: Project, ref: PipelineRef): Boolean =
     (PipelinesModel.getInstance(project).snapshot(ref) as? Snapshot.Data)?.canApprove != false
 
+/** True unless we positively know the user cannot retry (null/unknown stays permissive). */
+private fun retryAllowed(project: Project, ref: PipelineRef): Boolean =
+    (PipelinesModel.getInstance(project).snapshot(ref) as? Snapshot.Data)?.canRetry != false
+
 private class ReleasesDescriptor(
     private val project: Project,
     private val ref: PipelineRef,
@@ -350,6 +355,12 @@ private class TargetDescriptor(
             enabled = { approvalAllowed(project, node.ref) },
             onPerform = { node.target.latest?.let { Promotions.rejectRollout(project, node.ref, it) } },
         ),
+        gateAction(
+            "Retry Failed Job", "Retry this target's failed rollout (resumes the same rollout)", AllIcons.Actions.Restart,
+            visible = { node.target.latest?.failed == true },
+            enabled = { retryAllowed(project, node.ref) },
+            onPerform = { node.target.latest?.let { Promotions.retryRollout(project, node.ref, it) } },
+        ),
         object : DumbAwareAction("Promote to This Target…", "Promote the previous stage's release here", AllIcons.Actions.Forward) {
             override fun actionPerformed(e: AnActionEvent) =
                 Promotions.promoteToTarget(project, node.ref, node.target.targetId)
@@ -393,7 +404,7 @@ private class RolloutDescriptor(
 
     /** Rollout details in the details area. */
     override fun getContentComponent(): JComponent =
-        DetailPanels.rolloutPanel(node.ref, node.rollout)
+        DetailPanels.rolloutPanel(project, node.ref, node.rollout)
 
     /** Shown in the details-area toolbar; the right-click popup inherits it. */
     override fun getToolbarActions(): ActionGroup = toolbarActions
@@ -413,6 +424,19 @@ private class RolloutDescriptor(
             enabled = { approvalAllowed(project, node.ref) },
             onPerform = { Promotions.rejectRollout(project, node.ref, node.rollout) },
         ),
+        gateAction(
+            "Retry Failed Job", "Retry this rollout's failed job (resumes the same rollout)", AllIcons.Actions.Restart,
+            visible = { node.rollout.failed },
+            enabled = { retryAllowed(project, node.ref) },
+            onPerform = { Promotions.retryRollout(project, node.ref, node.rollout) },
+        ),
+        object : DumbAwareAction("Open Status & Logs", "Show this rollout's phases, jobs, and failure logs", AllIcons.Actions.Preview) {
+            override fun actionPerformed(e: AnActionEvent) {
+                // Reveal + activate this rollout's node so its (status-rich) detail panel shows.
+                ServiceViewManager.getInstance(project)
+                    .select(node, PipelinesServiceContributor::class.java, true, true)
+            }
+        },
         object : DumbAwareAction("Copy Version", "Copy this rollout's release name", AllIcons.Actions.Copy) {
             override fun actionPerformed(e: AnActionEvent) =
                 Promotions.copyVersion(project, node.rollout, node.rollout.rolloutId)
