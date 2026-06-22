@@ -13,15 +13,19 @@ import com.intellij.util.ui.JBUI
 import dev.flaticols.deliverypipeline.PipelinesModel
 import dev.flaticols.deliverypipeline.actions.Promotions
 import dev.flaticols.deliverypipeline.gcloud.CloudDeployApi
+import dev.flaticols.deliverypipeline.model.JobRunDetail
 import dev.flaticols.deliverypipeline.model.PipelineRef
 import dev.flaticols.deliverypipeline.model.ReleaseInfo
+import dev.flaticols.deliverypipeline.model.RolloutDetail
 import dev.flaticols.deliverypipeline.model.RolloutInfo
 import dev.flaticols.deliverypipeline.model.Snapshot
 import dev.flaticols.deliverypipeline.model.TargetState
 import dev.flaticols.deliverypipeline.model.prettyTime
 import com.intellij.icons.AllIcons
 import java.awt.BorderLayout
+import java.awt.Component
 import java.awt.FlowLayout
+import javax.swing.BoxLayout
 import javax.swing.Icon
 import javax.swing.JButton
 import javax.swing.JComponent
@@ -258,18 +262,106 @@ object DetailPanels {
         }
     }
 
-    fun rolloutPanel(ref: PipelineRef, rollout: RolloutInfo): JComponent {
-        val form = form(
-            "Version:" to bold(rollout.release),
-            "Target:" to value(rollout.targetId),
-            "State:" to iconLabel(rollout.statePretty, rollout.icon),
-            "Approval state:" to value(rollout.approvalState.ifEmpty { "—" }.lowercase().replace('_', ' ')),
-            "Started:" to value(prettyTime(rollout.createTime)),
-            "Finished:" to value(prettyTime(rollout.deployEndTime)),
-            "Console:" to BrowserLink("Open rollout (approval page)", rollout.approvalUrl ?: rollout.consoleUrl ?: ref.consoleUrl),
-        )
+    /**
+     * The rollout status page: cached facts up top, an inline Retry for a failed
+     * rollout, then the phases/jobs breakdown with the failure message and a
+     * Cloud Build logs link — fetched on demand (the bounded snapshot has no
+     * phase/job detail). [project] drives the off-EDT fetch and the retry action.
+     */
+    fun rolloutPanel(project: Project, ref: PipelineRef, rollout: RolloutInfo): JComponent {
+        val model = PipelinesModel.getInstance(project)
+        val canRetry = (model.snapshot(ref) as? Snapshot.Data)?.canRetry
+
+        val builder = FormBuilder.createFormBuilder()
+            .addComponent(TitledSeparator("Rollout"))
+            .addLabeledComponent("Version:", bold(rollout.release))
+            .addLabeledComponent("Target:", value(rollout.targetId))
+            .addLabeledComponent("State:", iconLabel(rollout.statePretty, rollout.icon))
+            .addLabeledComponent("Approval state:", value(rollout.approvalState.ifEmpty { "—" }.lowercase().replace('_', ' ')))
+            .addLabeledComponent("Started:", value(prettyTime(rollout.createTime)))
+            .addLabeledComponent("Finished:", value(prettyTime(rollout.deployEndTime)))
+            .addLabeledComponent("Console:", BrowserLink("Open rollout", rollout.consoleUrl ?: ref.consoleUrl))
+        if (rollout.failed) {
+            builder.addLabeledComponent("Actions:", retryButton(project, ref, rollout, canRetry))
+        }
+        builder.addComponent(TitledSeparator("Status & Logs"))
+        // Filled in asynchronously from the rollout's live phase/job detail.
+        val statusArea = JPanel(BorderLayout()).apply { add(value("Loading status…"), BorderLayout.NORTH) }
+        builder.addComponent(statusArea)
+        val form = builder.panel.apply { border = JBUI.Borders.empty(2, 14, 12, 14) }
+
+        model.background({
+            val detail = CloudDeployApi.rolloutDetail(rollout.name)
+            // For the failed job only, fetch its run for the failure message + build logs link.
+            val jobRun = detail.failedJob?.second?.jobRun?.takeIf { it.isNotEmpty() }
+                ?.let { runCatching { CloudDeployApi.jobRunDetail(it) }.getOrNull() }
+            detail to jobRun
+        }) { result ->
+            statusArea.removeAll()
+            result.onSuccess { (detail, jobRun) ->
+                statusArea.add(statusComponent(detail, jobRun), BorderLayout.NORTH)
+            }.onFailure {
+                statusArea.add(iconLabel("Status unavailable — ${it.message}", AllIcons.General.Warning), BorderLayout.NORTH)
+            }
+            statusArea.revalidate()
+            statusArea.repaint()
+        }
+
         return page(header(rollout.icon, rollout.rolloutId, "${ref.pipeline} · ${ref.gcpProject}/${ref.region}"), form)
     }
+
+    /**
+     * A single [Retry failed job] button. Disabled with a tooltip when the user
+     * is known to lack the retry permission; otherwise a click disables it once
+     * the request is dispatched, guarding against double-submit.
+     */
+    private fun retryButton(project: Project, ref: PipelineRef, rollout: RolloutInfo, canRetry: Boolean?): JComponent {
+        val panel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        val retry = JButton("Retry failed job")
+        if (canRetry == false) {
+            retry.isEnabled = false
+            val why = MISSING_RETRY_PERMISSION.replaceFirstChar { it.uppercase() }
+            HelpTooltip().setDescription(why).setNeverHideOnTimeout(true).installOn(retry)
+        } else {
+            retry.addActionListener { if (Promotions.retryRollout(project, ref, rollout)) retry.isEnabled = false }
+        }
+        panel.add(retry)
+        return panel
+    }
+
+    /** Failure summary (when failed) + per-phase job list, with a Cloud Build logs link on the failed job. */
+    private fun statusComponent(detail: RolloutDetail, jobRun: JobRunDetail?): JComponent {
+        val panel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            border = JBUI.Borders.emptyTop(2)
+        }
+        if (detail.state == "FAILED") {
+            val reason = detail.failureReason.ifEmpty {
+                detail.deployFailureCause.lowercase().replace('_', ' ').ifEmpty { "see job logs" }
+            }
+            panel.add(leftAligned(iconLabel("Failure: $reason", AllIcons.General.Error)))
+            jobRun?.failureMessage?.takeIf { it.isNotEmpty() }
+                ?.let { panel.add(leftAligned(value(it))) }
+        }
+        // The fetched run (and its build-log link) belongs to exactly one job — the one
+        // failedJob identified — so attach "Open logs" to that job by identity, not to any failed row.
+        val failed = detail.failedJob?.second
+        val failedLog = jobRun?.buildLogUrl
+        for (phase in detail.phases) {
+            panel.add(leftAligned(iconLabel("Phase ${phase.id} · ${phase.statePretty}", phase.icon)))
+            for (job in phase.jobs) {
+                val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply { border = JBUI.Borders.emptyLeft(18) }
+                row.add(iconLabel("${job.label} · ${job.statePretty}", job.icon))
+                if (job === failed && failedLog != null) row.add(BrowserLink("Open logs", failedLog))
+                panel.add(leftAligned(row))
+            }
+        }
+        if (detail.phases.isEmpty()) panel.add(leftAligned(value("No phase detail reported.")))
+        return panel
+    }
+
+    /** Pins a component to the left in a vertical [BoxLayout] (whose default is centered). */
+    private fun <T : JComponent> leftAligned(c: T): T = c.apply { alignmentX = Component.LEFT_ALIGNMENT }
 
     private fun page(header: JComponent, form: JComponent): JComponent {
         val top = JPanel(BorderLayout())
@@ -278,12 +370,6 @@ object DetailPanels {
         panel.add(header, BorderLayout.NORTH)
         panel.add(top, BorderLayout.CENTER)
         return panel
-    }
-
-    private fun form(vararg rows: Pair<String, JComponent>): JComponent {
-        val builder = FormBuilder.createFormBuilder()
-        rows.forEach { (label, component) -> builder.addLabeledComponent(label, component) }
-        return builder.panel.apply { border = JBUI.Borders.empty(2, 14, 12, 14) }
     }
 
     private fun header(icon: Icon?, title: String, subtitle: String): JComponent {
@@ -325,4 +411,7 @@ object DetailPanels {
 
     /** Reason text reused by the disabled buttons, the panel warning, and the target permission row. */
     private const val MISSING_APPROVE_PERMISSION = "you lack the clouddeploy.rollouts.approve permission"
+
+    /** Reason text shown on the disabled Retry button when the user lacks the retry permission. */
+    private const val MISSING_RETRY_PERMISSION = "you lack the clouddeploy.rollouts.retryJob permission"
 }

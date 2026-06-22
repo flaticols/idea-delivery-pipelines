@@ -66,6 +66,25 @@ fun releaseConsoleUrl(releaseName: String): String? {
         "${parts[3]}/${parts[5]}/releases/${parts[7]}?project=${parts[1]}"
 }
 
+/**
+ * Cloud Build logs page for the build that ran a rollout job, from the build's
+ * resource name. Regional builds serialize as
+ * `projects/{p}/locations/{loc}/builds/{id}` (the live Console uses the
+ * `;region={loc}` matrix segment); a global build is `projects/{p}/builds/{id}`.
+ * Null when [build] is empty or not a recognizable build resource name.
+ */
+fun cloudBuildLogUrl(build: String): String? {
+    val parts = build.split('/')
+    if (parts.size < 4 || parts[0] != "projects") return null
+    val project = parts[1]
+    return when {
+        parts.size >= 6 && parts[2] == "locations" ->
+            "https://console.cloud.google.com/cloud-build/builds;region=${parts[3]}/${parts[5]}?project=$project"
+        else ->
+            "https://console.cloud.google.com/cloud-build/builds/${parts[3]}?project=$project"
+    }
+}
+
 /** One rollout from the Cloud Deploy API. */
 data class RolloutInfo(
     /** Full resource name (…/releases/{r}/rollouts/{ro}). */
@@ -82,9 +101,88 @@ data class RolloutInfo(
     /** The Cloud Console page with the Approve button (rollout URL + /approve). */
     val approvalUrl: String? get() = rolloutApprovalUrl(name)
     val pendingApproval: Boolean get() = state == "PENDING_APPROVAL"
+    val failed: Boolean get() = state == "FAILED"
     val statePretty: String get() = state.lowercase().replace('_', ' ')
     val icon: Icon get() = rolloutStateIcon(state)
 }
+
+/**
+ * One job inside a rollout phase. [kind] is the human stage ("deploy",
+ * "verify", "predeploy", "postdeploy", "analysis", or a child-rollout job);
+ * [jobRun] is the JobRun resource name (empty until the job has run), the
+ * handle used to fetch the failure message and build logs.
+ */
+data class RolloutJob(
+    val id: String,
+    val state: String,
+    val kind: String,
+    val jobRun: String,
+) {
+    val failed: Boolean get() = state == "FAILED"
+    val statePretty: String get() = state.lowercase().replace('_', ' ')
+    val icon: Icon get() = rolloutStateIcon(state)
+    /** Stage label for the UI: the readable [kind], falling back to the raw id. */
+    val label: String get() = kind.ifEmpty { id }
+}
+
+/** One phase of a rollout with its jobs (deployment jobs, or child-rollout jobs for canary). */
+data class RolloutPhase(
+    val id: String,
+    val state: String,
+    val jobs: List<RolloutJob>,
+) {
+    val failed: Boolean get() = state == "FAILED"
+    val statePretty: String get() = state.lowercase().replace('_', ' ')
+    val icon: Icon get() = rolloutStateIcon(state)
+}
+
+/**
+ * Full detail of one rollout (phases + their jobs), fetched on demand for the
+ * status panel and to locate the exact phase/job that `retryJob` must target.
+ */
+data class RolloutDetail(
+    val name: String,
+    val targetId: String,
+    val state: String,
+    /** Rollout-level failure summary (`failureReason`); "" when not failed. */
+    val failureReason: String,
+    /** Rollout-level failure cause enum (`deployFailureCause`); "" when absent. */
+    val deployFailureCause: String,
+    val createTime: String,
+    val deployStartTime: String,
+    val deployEndTime: String,
+    val phases: List<RolloutPhase>,
+) {
+    val statePretty: String get() = state.lowercase().replace('_', ' ')
+    val icon: Icon get() = rolloutStateIcon(state)
+
+    /**
+     * The first FAILED job (phases then jobs, in execution order) — exactly what
+     * the Cloud Console "Retry" button resumes. Null when nothing is retryable.
+     */
+    val failedJob: Pair<RolloutPhase, RolloutJob>?
+        get() = phases.firstNotNullOfOrNull { phase ->
+            phase.jobs.firstOrNull { it.failed }?.let { phase to it }
+        }
+
+    /** A failed rollout with a concrete failed job to retry. */
+    val retryable: Boolean get() = state == "FAILED" && failedJob != null
+}
+
+/** The run of one rollout job: its failure message and the Cloud Build it ran. */
+data class JobRunDetail(
+    val name: String,
+    val state: String,
+    /** The job-run's own failure message; "" when it did not fail / not reported. */
+    val failureMessage: String,
+    /** Cloud Build resource name that executed the job; "" for non-Cloud-Build jobs. */
+    val build: String,
+) {
+    val buildLogUrl: String? get() = cloudBuildLogUrl(build)
+}
+
+/** The current credentials' rollout permissions on a pipeline, probed in one call. */
+data class RolloutPermissions(val canApprove: Boolean, val canRetry: Boolean)
 
 /** One Cloud Deploy release (a versioned set of rendered manifests), newest first. */
 data class ReleaseInfo(
@@ -139,6 +237,8 @@ sealed interface Snapshot {
         val targets: List<TargetState>,
         /** Whether the current user may approve/reject here: true/false, or null when unknown. */
         val canApprove: Boolean? = null,
+        /** Whether the current user may retry failed jobs here: true/false, or null when unknown. */
+        val canRetry: Boolean? = null,
         /** Recent releases, newest first — the pipeline's "Releases" tree node. */
         val releases: List<ReleaseInfo> = emptyList(),
     ) : Snapshot {
